@@ -1,0 +1,6 @@
+# 强制 LF: shell/yml/Makefile/C 源在 Linux(GitHub Actions)上必须 LF, 否则 bash/make 报错。
+* text=auto eol=lf
+*.yml text eol=lf
+*.c text eol=lf
+Makefile text eol=lf
+*.md text eol=lf

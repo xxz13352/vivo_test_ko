@@ -1,0 +1,99 @@
+name: build-testko
+
+# 编译 3 个极小 aarch64 内核模块, 用于隔离 Y52s 真机 insmod 崩溃(load_module+0x2d14 NULL deref)。
+# 用户本机无工具链, 故在 GitHub Actions 上交叉编译。产物为 artifacts, 下载后拷到工作区 testko/out/。
+#
+# 三变体(真机逐个 insmod 二分):
+#   t0_empty  : 空模块 + 后处理去 modversions  → 测最纯加载链
+#   t1_modver : 空模块(调 printk) + modversions → 测 modversions/__versions 路径
+#   t2_rcu    : modversions + import __rcu_read_lock → 触发 RT 驱动同款符号路径(经我的 ksymtab 补丁)
+#
+# 用 mainline stable linux-4.14.141(kernel.org)。vermagic/CRC 不会匹配 Y52s(与 RT 驱动同样情况),
+# 这无妨: 测试目标是"加载这类 ko 时内核会不会崩", 加载靠 boot_y52_insmodfix.img 的补丁放行。
+
+on:
+  workflow_dispatch:        # 手动触发(Actions 页面点 Run workflow)
+  push:
+    paths:
+      - 'testko/**'
+      - '.github/workflows/build-testko.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install toolchain + deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu bc bison flex libssl-dev \
+            libelf-dev build-essential wget xz-utils kmod
+
+      - name: Download mainline linux-4.14.141
+        run: |
+          cd $HOME
+          wget -q https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.141.tar.xz
+          tar xf linux-4.14.141.tar.xz
+          echo "KDIR=$HOME/linux-4.14.141" >> $GITHUB_ENV
+
+      - name: Configure kernel (arm64 + MODVERSIONS + MODULE_UNLOAD)
+        run: |
+          cd $KDIR
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          make defconfig
+          # 关键: 匹配 Y52s vermagic 后半段所需的 config
+          ./scripts/config --enable MODULES
+          ./scripts/config --enable MODULE_UNLOAD
+          ./scripts/config --enable MODVERSIONS
+          ./scripts/config --enable PREEMPT          # vermagic 'preempt'
+          ./scripts/config --disable MODULE_SIG_FORCE
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          echo "=== vermagic 相关 config ==="
+          grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=' .config || true
+
+      - name: modules_prepare
+        run: |
+          cd $KDIR
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules_prepare
+          # 生成 Module.symvers(modversions 需要) —— 编 vmlinux 的符号 CRC
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) vmlinux || true
+          ls -la Module.symvers || echo "WARN: no Module.symvers (CRC 将为 0)"
+
+      - name: Build test modules
+        run: |
+          cd $GITHUB_WORKSPACE/testko
+          make -C $KDIR M=$PWD ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
+          ls -la *.ko
+
+      - name: Post-process t0 (strip modversions)
+        run: |
+          cd $GITHUB_WORKSPACE/testko
+          # t0 要"无 modversions": 去掉 __versions 节, 并把 .modinfo 里 modversions 字段抹掉
+          aarch64-linux-gnu-objcopy --remove-section=__versions t0_empty.ko t0_empty_nomodver.ko || cp t0_empty.ko t0_empty_nomodver.ko
+          echo "t0_empty_nomodver.ko 生成"
+
+      - name: Inspect modules (vermagic / __versions / undefined symbols)
+        run: |
+          cd $GITHUB_WORKSPACE/testko
+          for ko in t0_empty.ko t0_empty_nomodver.ko t1_modver.ko t2_rcu.ko; do
+            [ -f "$ko" ] || continue
+            echo "==================== $ko ===================="
+            echo "--- vermagic ---"
+            aarch64-linux-gnu-objdump -s -j .modinfo "$ko" 2>/dev/null | grep -a vermagic || \
+              modinfo "$ko" 2>/dev/null | grep vermagic || echo "(none)"
+            echo "--- __versions 节大小 ---"
+            aarch64-linux-gnu-readelf -S "$ko" 2>/dev/null | grep -A1 __versions || echo "(no __versions)"
+            echo "--- 未定义(导入)符号 UND ---"
+            aarch64-linux-gnu-readelf -s "$ko" 2>/dev/null | awk '$7=="UND" && $8!="" {print $8}' | sort -u
+            echo
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: testko-aarch64-4.14.141
+          path: |
+            testko/*.ko
+          if-no-files-found: error

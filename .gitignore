@@ -1,0 +1,9 @@
+# 只推 testko/ 源码 + workflow 到 GitHub 跑 Actions。
+# 屏蔽工作区所有大文件/二进制/IDA 库/镜像(它们与编译测试 ko 无关, 且体积巨大)。
+*
+!.gitignore
+!.gitattributes
+!testko/
+!testko/**
+!.github/
+!.github/**
