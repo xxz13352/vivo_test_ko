@@ -38,10 +38,22 @@ jobs:
           tar xf linux-4.14.141.tar.xz
           echo "KDIR=$HOME/linux-4.14.141" >> $GITHUB_ENV
 
+      - name: Fix dtc yylloc multiple-definition (GCC 10+ -fno-common vs 4.14 dtc)
+        run: |
+          cd $KDIR
+          # 官方修复(commit e33a814e): 4.14 用 _shipped 预生成文件, 把重复的全局 yylloc 改 extern。
+          # GCC 11/12(ubuntu-22.04)默认 -fno-common → dtc-lexer 与 dtc-parser 重复定义 yylloc 链接失败。
+          for f in scripts/dtc/dtc-lexer.lex.c_shipped scripts/dtc/dtc-lexer.l; do
+            [ -f "$f" ] && sed -i 's/^YYLTYPE yylloc;/extern YYLTYPE yylloc;/' "$f" && echo "patched $f"
+          done
+          grep -n "yylloc;" scripts/dtc/dtc-lexer.lex.c_shipped || true
+
       - name: Configure kernel (arm64 + MODVERSIONS + MODULE_UNLOAD)
         run: |
           cd $KDIR
           export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          # -fcommon: 兜底, 让 GCC 10+ 恢复旧合并行为(防 dtc 之外的 host 工具同类报错)
+          export HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon"
           make defconfig
           # 关键: 匹配 Y52s vermagic 后半段所需的 config
           ./scripts/config --enable MODULES
@@ -49,22 +61,22 @@ jobs:
           ./scripts/config --enable MODVERSIONS
           ./scripts/config --enable PREEMPT          # vermagic 'preempt'
           ./scripts/config --disable MODULE_SIG_FORCE
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" olddefconfig
           echo "=== vermagic 相关 config ==="
           grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=' .config || true
 
       - name: modules_prepare
         run: |
           cd $KDIR
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) modules_prepare
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" -j$(nproc) modules_prepare
           # 生成 Module.symvers(modversions 需要) —— 编 vmlinux 的符号 CRC
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) vmlinux || true
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" -j$(nproc) vmlinux || true
           ls -la Module.symvers || echo "WARN: no Module.symvers (CRC 将为 0)"
 
       - name: Build test modules
         run: |
           cd $GITHUB_WORKSPACE/testko
-          make -C $KDIR M=$PWD ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
+          make -C $KDIR M=$PWD ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" modules
           ls -la *.ko
 
       - name: Post-process t0 (strip modversions)
