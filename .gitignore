@@ -7,3 +7,6 @@
 !testko/**
 !.github/
 !.github/**
+# testko 下只推源码, 不推编译产物/原厂 ko(Actions 产物 + 闭源原厂模块不入仓库)
+testko/*.ko
+testko/y52_golden_crc.json

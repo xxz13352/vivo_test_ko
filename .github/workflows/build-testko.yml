@@ -61,9 +61,12 @@ jobs:
           ./scripts/config --enable MODVERSIONS
           ./scripts/config --enable PREEMPT          # vermagic 'preempt'
           ./scripts/config --disable MODULE_SIG_FORCE
+          # ★ 关键: Y52s 内核要求模块带 PLT 节(否则 insmod 报 "module PLT section(s) missing")
+          # 真机实测: test ko 无 .plt → 早期被拒, 走不到 RT 驱动崩溃点。必须开 ARM64_MODULE_PLTS。
+          ./scripts/config --enable ARM64_MODULE_PLTS
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" olddefconfig
-          echo "=== vermagic 相关 config ==="
-          grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=' .config || true
+          echo "=== vermagic + PLT 相关 config ==="
+          grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=|CONFIG_ARM64_MODULE_PLTS' .config || true
 
       - name: modules_prepare
         run: |
