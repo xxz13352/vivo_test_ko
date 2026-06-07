@@ -63,10 +63,16 @@ jobs:
           ./scripts/config --disable MODULE_SIG_FORCE
           # ★ 关键: Y52s 内核要求模块带 PLT 节(否则 insmod 报 "module PLT section(s) missing")
           # 真机实测: test ko 无 .plt → 早期被拒, 走不到 RT 驱动崩溃点。必须开 ARM64_MODULE_PLTS。
-          ./scripts/config --enable ARM64_MODULE_PLTS
+          # 注意: 4.14 的 config ARM64_MODULE_PLTS 是【无 prompt 的隐藏 symbol】(arch/arm64/Kconfig:981 裸 bool),
+          # 直接 --enable 会被 olddefconfig 丢弃。唯一开法是开启会 select 它的 RANDOMIZE_BASE(KASLR):
+          #   config RANDOMIZE_BASE ... select ARM64_MODULE_PLTS if MODULES   (Kconfig:997-999)
+          ./scripts/config --enable RANDOMIZE_BASE
+          ./scripts/config --enable ARM64_MODULE_PLTS   # 兜底(被 select 后即生效)
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- HOSTCFLAGS="-fcommon" KCFLAGS="-fcommon" olddefconfig
           echo "=== vermagic + PLT 相关 config ==="
-          grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=|CONFIG_ARM64_MODULE_PLTS' .config || true
+          grep -E 'CONFIG_MODVERSIONS|CONFIG_MODULE_UNLOAD|CONFIG_PREEMPT=|CONFIG_SMP=|CONFIG_RANDOMIZE_BASE|CONFIG_ARM64_MODULE_PLTS' .config || true
+          # 断言: PLT 必须真正开启, 否则后面编出的 ko 仍无 .plt, 白跑一趟。
+          grep -q '^CONFIG_ARM64_MODULE_PLTS=y' .config || { echo "FATAL: ARM64_MODULE_PLTS 未生效"; exit 1; }
 
       - name: modules_prepare
         run: |
